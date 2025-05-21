@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 from langchain_groq import ChatGroq
 from langchain_community.utilities import SQLDatabase
@@ -7,7 +6,7 @@ from langchain_community.agent_toolkits import create_sql_agent
 from dotenv import load_dotenv
 import os
 
-# Load environment variables
+
 load_dotenv()
 
 def init_groq():
@@ -27,15 +26,12 @@ def init_db():
 def generate_response(user_query):
     """Process user query and generate response"""
     try:
-        # Initialize components
         llm = init_groq()
         db = init_db()
-        
-        # Create SQL toolkit and get tools
+
         toolkit = SQLDatabaseToolkit(db=db, llm=llm)
-        tools = toolkit.get_tools()  # Now actually using this
+        tools = toolkit.get_tools()  
         
-        # Create SQL agent
         agent = create_sql_agent(
             llm=llm,
             toolkit=toolkit,
@@ -43,7 +39,6 @@ def generate_response(user_query):
             verbose=True
         )
         
-        # Process query using the tools
         response = agent.invoke({
             "input": f"Generate SQL query for: {user_query}. Use only the provided tools."
         })
@@ -58,7 +53,7 @@ st.title("🦙 Groq SQL Query Assistant")
 st.write("Ask natural language questions about your database!")
 
 user_input = st.text_input("Enter your question:", 
-                         placeholder="e.g., Show top 5 customers by sales")
+                         placeholder="e.g., yo, before write a question always check the available tables")
 
 if st.button("Generate Query"):
     if user_input:
@@ -67,7 +62,7 @@ if st.button("Generate Query"):
             
             # Display results
             st.subheader("Generated SQL Query")
-            st.code(response, language="sql")
+            st.code(response, language="postgresql")
             
             # Add results table if needed
             # result = db.run(response)
