@@ -53,7 +53,7 @@ cd your-repo-name
 
 ## Example Queries
 
-![Description](codeimage/code.png)
+![](codeimage/code.png)
 
 ## Key Components
 
