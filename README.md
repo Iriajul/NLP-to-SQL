@@ -33,11 +33,10 @@ cd your-repo-name
 ```
    .
    ├── README.md
-   ├── app.py              # Web interface
+   ├── app.py              # Streamlit interface
    ├── zax.ipynb           # Main Jupyter notebook
    ├── requirements.txt    # Dependencies
    ├── .env.example        # Environment template
-   └── schema.sql          # Database schema
 ```
 
 1. Create and activate virtual environment  
