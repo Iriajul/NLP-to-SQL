@@ -53,7 +53,7 @@ cd your-repo-name
 
 ## Example Queries
 
-![Description](codeimage/code.png)
+![Like](codeimage/code.png)
 
 ## Key Components
 
@@ -75,6 +75,11 @@ cd your-repo-name
 - SQL validation  
 - Safe execution  
 - Result interpretation  
+
+### Proccesed Graph
+
+![Like](codeimage/Archgraph.png)
+
 
 ## API Reference
 
