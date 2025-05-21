@@ -78,7 +78,7 @@ cd your-repo-name
 
 ### Proccesed Graph
 
-![Like](codeimage/Archgraph.png)
+![Description](codeimage/Archgraph.png)
 
 
 ## API Reference
