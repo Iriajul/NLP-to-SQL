@@ -1,3 +1,4 @@
+
 # SQL Conversational Agent with PostgreSQL
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -22,11 +23,14 @@ A conversational AI agent that interacts with PostgreSQL databases using natural
 
 ## Installation
 
- Clone the repository:
+Clone the repository:
 ```bash
 git clone https://github.com/yourusername/your-repo-name.git
 cd your-repo-name
+```
+
 ## Project Structure
+```
    .
    ├── README.md
    ├── app.py              # Web interface
@@ -34,69 +38,69 @@ cd your-repo-name
    ├── requirements.txt    # Dependencies
    ├── .env.example        # Environment template
    └── schema.sql          # Database schema
+```
 
-1.Create and activate virtual environment
-2.Install dependencies
-3.Create .env file
-4.Database setup:
-   Create PostgreSQL database with 'your' schema
-   Populate tables (refer to schema.sql)
+1. Create and activate virtual environment  
+2. Install dependencies  
+3. Create .env file  
+4. Database setup:  
+   - Create PostgreSQL database with 'your' schema  
+   - Populate tables (refer to schema.sql)  
 
 ## Usage
-   Jupyter Notebook (zax.ipynb)
 
-## Web Interface
-   (app.py)
+- Jupyter Notebook (`zax.ipynb`)
+- Web Interface (`app.py`)
 
 ## Example Queries
-   ![Description](codeimage/code.png)
 
+![Description](codeimage/code.png)
 
-##Key Components
-Database Tools
+## Key Components
 
-    SQLDatabaseToolkit: Schema exploration and query execution
-    Custom query validation and error handling
-    Safe query execution wrapper
+### Database Tools
 
-Language Model
+- `SQLDatabaseToolkit`: Schema exploration and query execution  
+- Custom query validation and error handling  
+- Safe query execution wrapper  
 
-    ChatGroq with Llama3-70b-8192 model
-    Temperature: 0.0 for deterministic output
+### Language Model
 
-Workflow
+- ChatGroq with Llama3-70b-8192 model  
+- Temperature: 0.0 for deterministic output  
 
-    Schema inspection
-    Query generation
-    SQL validation
-    Safe execution
-    Result interpretation
+### Workflow
 
-API Reference
+- Schema inspection  
+- Query generation  
+- SQL validation  
+- Safe execution  
+- Result interpretation  
 
-Tools
+## API Reference
+
+### Tools
+```json
 {
     "sql_db_list_tables": "List available tables",
     "sql_db_schema": "Get table schema",
     "sql_db_query": "Execute SQL query",
     "sql_db_query_checker": "Validate SQL queries"
 }
+```
 
-State Graph
-
+### State Graph
+```python
 StateGraph(State)
     .add_node("first_tool_call", first_tool_call)
     .add_node("list_tables_tool", list_tables)
     .add_node("get_schema_tool", get_schema)
     ...
     .compile()
+```
 
-Acknowledgments
+## Acknowledgments
 
-    LangChain for agent orchestration
-    Groq for ultra-fast LLM inference
-    PostgreSQL for reliable database management    
-
-License
-
-Distributed under the MIT License. See LICENSE for more information.    
+- LangChain for agent orchestration  
+- Groq for ultra-fast LLM inference  
+- PostgreSQL for reliable database management  
