@@ -14,7 +14,7 @@ A conversational AI agent that interacts with PostgreSQL databases using natural
 - Stateful conversation management
 - Groq API integration for high-speed inference
 
-## Prerequisites
+## Basic
 
 - Python 3.9+
 - PostgreSQL database
@@ -51,11 +51,11 @@ cd your-repo-name
 - Jupyter Notebook (`zax.ipynb`)
 - Web Interface (`app.py`)
 
-## Example Queries
-
-![Like](codeimage/code.png)
-
 ## Key Components
+- Database Tools
+- SQLDatabaseToolkit: Schema exploration and query execution
+- Custom query validation and error handling
+- Safe query execution wrapper
 
 ### Database Tools
 
@@ -102,6 +102,15 @@ StateGraph(State)
     ...
     .compile()
 ```
+
+## Example Queries
+![Like](codeimage/code.png)
+
+## Interface (Simple)
+
+![Streamlit](codeimage/Capture.png)
+
+
 
 ## Acknowledgments
 
