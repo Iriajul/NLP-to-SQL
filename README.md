@@ -53,7 +53,7 @@ cd your-repo-name
 
 ## Example Queries
 
-![](codeimage/D:\nl2sql_project\codeimage\code.png)
+![Description](codeimage/code.png)
 
 ## Key Components
 
@@ -103,3 +103,7 @@ StateGraph(State)
 - LangChain for agent orchestration  
 - Groq for ultra-fast LLM inference  
 - PostgreSQL for reliable database management  
+
+
+## YOU CAN FACE ULTRARAGE
+![Example](https://i.imgur.com/VRrq86I.png)
