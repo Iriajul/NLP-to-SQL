@@ -53,7 +53,7 @@ cd your-repo-name
 
 ## Example Queries
 
-![](codeimage/code.png)
+![](codeimage/D:\nl2sql_project\codeimage\code.png)
 
 ## Key Components
 
