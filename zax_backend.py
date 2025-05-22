@@ -92,7 +92,7 @@ class SubmitFinalAnswer(BaseModel):
 llm_with_final_answer = llm.bind_tools([SubmitFinalAnswer])
 
 # Query generation setup
-query_gen_system_prompt = """You are a PostgreSQL expert with a strong attention to detail.Given an input question, output a syntactically correct SQLite query to run, then look at the results of the query and return the answer.
+query_gen_system_prompt = """You are a PostgreSQL expert with a strong attention to detail.Given an input question, output a syntactically correct PostgreSQL query to run, then look at the results of the query and return the answer.
 
 1. DO NOT call any tool besides SubmitFinalAnswer to submit the final answer.
 
