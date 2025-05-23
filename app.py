@@ -13,14 +13,15 @@ def init_groq():
     """Initialize Groq client"""
     return ChatGroq(
         model_name="llama3-70b-8192",
-        groq_api_key=os.getenv("GROQ_API_KEY")
+        groq_api_key=os.getenv("GROQ_API_KEY"),
+        temperature=0.0
     )
 
 def init_db():
     """Initialize SQL Database connection"""
     return SQLDatabase.from_uri(
         os.getenv("DATABASE_URL"),
-        schema="info"
+        schema=os.getenv("DB_SCHEMA", "info")
     )
 
 def generate_response(user_query):

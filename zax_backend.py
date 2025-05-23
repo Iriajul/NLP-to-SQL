@@ -22,7 +22,7 @@ warnings.filterwarnings("ignore")
 load_dotenv()
 db = SQLDatabase.from_uri(
     os.getenv("DATABASE_URL"),
-    schema="info"
+    schema=os.getenv("DB_SCHEMA", "info")
 )
 
 # Language model setup
@@ -184,6 +184,6 @@ app = workflow.compile()
 
 # Example usage
 if __name__ == "__main__":
-    query = {"messages": [("user", "Which product haves the highest price?")]}
+    query = {"messages": [("user", "Which product haves the highest discount?")]}
     response = app.invoke(query)
     print(response["messages"][-1].tool_calls[0]["args"]["final_answer"])
