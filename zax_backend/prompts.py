@@ -40,3 +40,23 @@ query_gen_prompt = ChatPromptTemplate.from_messages([
     ("system", query_gen_system_prompt),
     ("placeholder", "{messages}")
 ])
+
+
+sql_correction_system_prompt = """
+You are a PostgreSQL expert specializing in debugging SQL queries.
+Your previous query failed with the following error:
+
+Error:
+{db_error}
+
+Your previous SQL:
+{sql}
+
+Please fix the query to address the error and ONLY output the corrected SQL.
+DO NOT output explanations, error messages, tool calls, or code blocks. ONLY output the corrected SQL query.
+"""
+
+sql_correction_prompt = ChatPromptTemplate.from_messages([
+    ("system", sql_correction_system_prompt),
+    ("placeholder", "{messages}")
+])

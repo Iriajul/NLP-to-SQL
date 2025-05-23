@@ -6,8 +6,71 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableLambda, RunnableWithFallbacks
 from langgraph.prebuilt import ToolNode
 from tools import list_tables_tool, get_schema_tool, query_to_database
-from prompts import query_check_prompt, query_gen_prompt
+from prompts import query_check_prompt, query_gen_prompt, sql_correction_prompt
+from langchain.schema import AIMessage, HumanMessage
 from config import llm
+
+# --- Utility to detect if DB result is an error (simple version) ---
+def is_db_error(result):
+    # You may want to tune this for your actual DB error formats
+    return isinstance(result, str) and (result.startswith("Error:") or "error" in result.lower())
+
+# --- The main workflow node for executing SQL with retry/correction ---
+def execute_with_correction(state, max_retries=3):
+    messages = state.get("messages", [])
+    # Use last_sql directly, do not regenerate
+    sql_query = state.get("last_sql", "")
+    last_sql = sql_query
+    db_result = None
+    last_error = None
+    attempt = 0
+
+    print(f"[INITIAL SQL GENERATED]: {sql_query}")
+
+    while attempt < max_retries:
+        if not sql_query:
+            print(f"[SQL_QUERY][Attempt {attempt+1} failed]: LLM returned empty SQL!")
+            db_result = "Error: LLM returned empty SQL"
+            last_error = db_result
+            break
+
+        db_result = query_to_database.invoke(sql_query)
+        if not is_db_error(db_result):
+            print(f"[SQL_QUERY]: {sql_query}")
+            print(f"[DB_RESULT]: {db_result}")
+            state["last_sql"] = sql_query
+            state["last_query_result"] = db_result
+            state["messages"] = messages + [
+                AIMessage(content=f"[DB_RESULT]\nQuery: {sql_query}\nResult: {db_result}")
+            ]
+            return state
+
+        last_error = db_result
+        attempt += 1
+        print(f"[SQL_QUERY][Attempt {attempt} failed]: {sql_query}")
+        print(f"[DB_ERROR]: {db_result}")
+
+        # Correction round: ask LLM to fix SQL given the error
+        correction_prompt_value = sql_correction_prompt.invoke({
+            "sql": sql_query,
+            "db_error": db_result,
+            "messages": [HumanMessage(content=state.get("user_input", ""))]
+        })
+        correction_message = correction_prompt_value.to_messages()[-1]
+        sql_query = correction_message.content.strip()
+        last_sql = sql_query
+        print(f"[LLM CORRECTION OUTPUT][Attempt {attempt}]: {sql_query}")
+
+        if not sql_query:
+            print("[ERROR] LLM correction returned empty SQL. Stopping retry loop.")
+            break
+
+    state["last_sql"] = last_sql
+    state["last_query_result"] = last_error
+    state["messages"] = messages + [
+        AIMessage(content=f"Sorry, the system was unable to generate a working SQL query for your request after {attempt} attempts.\nLast error: {last_error}")
+    ]
+    return state
 
 # --- State definition ---
 class State(TypedDict):
@@ -49,19 +112,19 @@ def first_tool_call(state: State) -> dict:
     }])], "last_query_result": None, "last_sql": ""}
 
 def check_the_given_query(state: State):
-    return {"messages": [check_generated_query.invoke({"messages": [state["messages"][-1]]})]}
+    last_message = state["messages"][-1]
+    sql_to_check = last_message.content  # or adjust extraction if needed
+    check_prompt_value = query_check_prompt.invoke({"messages": [HumanMessage(content=sql_to_check)]})
+    checked_query = check_prompt_value.to_messages()[-1]
+    return {"messages": [checked_query]}
 
 # --- IMPORTANT: Only generate SQL, do NOT allow SubmitFinalAnswer here ---
 def generation_query(state: State):
     # Generate SQL only, not answer!
-    message = query_generator.invoke(state)
+    print("Prompt for LLM:", ...)
+    message = query_generator.invoke(state)  # message is an AIMessage
     print("LLM SQL Generation Output:", message)
-    # Extract SQL from message.content
-    sql_text = ""
-    # If your prompt always puts SQL in a code block, you can parse it out here.
-    # For now, just capture the content.
-    if hasattr(message, "content"):
-        sql_text = message.content
+    sql_text = message.content if hasattr(message, "content") else ""
     # Pass SQL to next step
     return {"messages": [message], "last_sql": sql_text}
 
@@ -113,7 +176,8 @@ workflow.add_node("get_schema_tool", get_schema)
 workflow.add_node("model_get_schema", llm_get_schema)
 workflow.add_node("query_gen", generation_query)
 workflow.add_node("correct_query", check_the_given_query)
-workflow.add_node("execute_query", execute_and_store_query)
+#workflow.add_node("execute_query", execute_and_store_query)
+workflow.add_node("execute_query", execute_with_correction)
 workflow.add_node("submit_final_answer", submit_answer_from_result)
 
 workflow.add_edge(START, "first_tool_call")
@@ -121,6 +185,8 @@ workflow.add_edge("first_tool_call", "list_tables_tool")
 workflow.add_edge("list_tables_tool", "model_get_schema")
 workflow.add_edge("model_get_schema", "get_schema_tool")
 workflow.add_edge("get_schema_tool", "query_gen")
+workflow.add_edge("query_gen", "correct_query")
+workflow.add_edge("correct_query", "execute_query")
 workflow.add_conditional_edges(
     "query_gen",
     lambda state: "execute_query",  # Always execute SQL, do not allow END or correct_query here!
