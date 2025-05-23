@@ -10,7 +10,6 @@ tools = toolkit.get_tools()
 list_tables_tool = next((tool for tool in tools if tool.name == "sql_db_list_tables"), None)
 get_schema_tool = next((tool for tool in tools if tool.name == "sql_db_schema"), None)
 
-# Custom tool definition
 @tool
 def query_to_database(query: str) -> str:
     """Execute a PostgreSQL query against the database and return the result."""

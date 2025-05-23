@@ -2,22 +2,24 @@ from typing import Annotated, Any, TypedDict
 from pydantic import BaseModel, Field
 from langgraph.graph import END, StateGraph, START
 from langgraph.graph.message import add_messages
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableLambda, RunnableWithFallbacks
 from langgraph.prebuilt import ToolNode
 from tools import list_tables_tool, get_schema_tool, query_to_database
 from prompts import query_check_prompt, query_gen_prompt
 from config import llm
 
-# State definition
+# --- State definition ---
 class State(TypedDict):
     messages: Annotated[list[Any], add_messages]
+    last_query_result: Any
+    last_sql: str
 
-# Error handling
+# --- Tool wrappers ---
 def handle_tool_error(state: State):
     error = state.get("error")
     tool_calls = state["messages"][-1].tool_calls
-    return {"messages": [ToolMessage(
+    return {"messages": [AIMessage(
         content=f"Error: {repr(error)}\n please fix your mistakes.",
         tool_call_id=tc["id"]
     ) for tc in tool_calls]}
@@ -25,69 +27,85 @@ def handle_tool_error(state: State):
 def create_node_from_tool_with_fallback(tools: list) -> RunnableWithFallbacks:
     return ToolNode(tools).with_fallbacks([RunnableLambda(handle_tool_error)], exception_key="error")
 
-# Tool nodes
 list_tables = create_node_from_tool_with_fallback([list_tables_tool])
 get_schema = create_node_from_tool_with_fallback([get_schema_tool])
-query_database = create_node_from_tool_with_fallback([query_to_database])
 
-# Query checking setup
 llm_with_tools = llm.bind_tools([query_to_database])
 check_generated_query = query_check_prompt | llm_with_tools
 
-# Final answer submission
 class SubmitFinalAnswer(BaseModel):
     """Submit the final answer to the user based on the query results."""
-    final_answer: str = Field(..., description="TThe formatted query results")
+    final_answer: str = Field(..., description="The formatted query results")
 
 llm_with_final_answer = llm.bind_tools([SubmitFinalAnswer])
+query_generator = query_gen_prompt | llm
 
-# Query generator
-query_generator = query_gen_prompt | llm_with_final_answer
-
-# Workflow nodes
-def first_tool_call(state: State) -> dict[str, list[AIMessage]]:
+# --- Nodes ---
+def first_tool_call(state: State) -> dict:
     return {"messages": [AIMessage(content="", tool_calls=[{
         "name": "sql_db_list_tables",
         "args": {},
         "id": "tool_abcd123"
-    }])]}
+    }])], "last_query_result": None, "last_sql": ""}
 
 def check_the_given_query(state: State):
     return {"messages": [check_generated_query.invoke({"messages": [state["messages"][-1]]})]}
 
+# --- IMPORTANT: Only generate SQL, do NOT allow SubmitFinalAnswer here ---
 def generation_query(state: State):
+    # Generate SQL only, not answer!
     message = query_generator.invoke(state)
-    # Debug: print the generated message to inspect it
-    print("LLM Output:", message)
-    # Only accept function tool calls, not raw text or SQL code
-    tool_messages = []
-    if message.tool_calls:
-        for tc in message.tool_calls:
-            if tc["name"] != "SubmitFinalAnswer":
-                tool_messages.append(ToolMessage(
-                    content=f"Error: The wrong tool was called: {tc['name']}. Please fix your mistakes. Only call SubmitFinalAnswer.",
-                    tool_call_id=tc["id"]
-                ))
+    print("LLM SQL Generation Output:", message)
+    # Extract SQL from message.content
+    sql_text = ""
+    # If your prompt always puts SQL in a code block, you can parse it out here.
+    # For now, just capture the content.
+    if hasattr(message, "content"):
+        sql_text = message.content
+    # Pass SQL to next step
+    return {"messages": [message], "last_sql": sql_text}
+
+def execute_and_store_query(state: State):
+    sql_query = state.get("last_sql", "")
+    if not sql_query:
+        db_result = "Error: No SQL query found."
     else:
-        tool_messages.append(ToolMessage(
-            content="Error: No tool call detected. Please only use SubmitFinalAnswer with the formatted answer.",
-            tool_call_id="unknown"
-        ))
-    return {"messages": [message] + tool_messages}
+        db_result = query_to_database.invoke(sql_query)
+    print(f"[SQL_QUERY]: {sql_query}")
+    print(f"[DB_RESULT]: {db_result}")
+    return {
+        "messages": state["messages"] + [
+            AIMessage(content=f"[DB_RESULT]\nQuery: {sql_query}\nResult: {db_result}")
+        ],
+        "last_query_result": db_result,
+        "last_sql": sql_query
+    }
+
+def submit_answer_from_result(state: State):
+    db_result = state.get("last_query_result")
+    if not db_result or db_result.startswith("Error"):
+        return {"messages": [AIMessage(content="No data found or an error occurred. Unable to answer the question from the database.")]}
+    prompt = (
+        "You are a database assistant. ONLY use the following data to answer the user's question. "
+        "If you cannot answer from the data, say you do not have enough information. "
+        f"Database result: {db_result}\nFormat it for the user."
+    )
+    message = llm_with_final_answer.invoke([HumanMessage(content=prompt)])
+    return {"messages": [message]}
 
 def should_continue(state: State):
     last_message = state["messages"][-1]
     if getattr(last_message, "tool_calls", None):
         return END
-    elif last_message.content.startswith("Error:"):
-        return "query_gen"
+    elif last_message.content.startswith("Error:") or "No data found" in last_message.content:
+        return END
     return "correct_query"
 
 def llm_get_schema(state: State):
     response = llm.bind_tools([get_schema_tool]).invoke(state["messages"])
     return {"messages": [response]}
 
-# Create workflow
+# --- WORKFLOW ---
 workflow = StateGraph(State)
 workflow.add_node("first_tool_call", first_tool_call)
 workflow.add_node("list_tables_tool", list_tables)
@@ -95,7 +113,8 @@ workflow.add_node("get_schema_tool", get_schema)
 workflow.add_node("model_get_schema", llm_get_schema)
 workflow.add_node("query_gen", generation_query)
 workflow.add_node("correct_query", check_the_given_query)
-workflow.add_node("execute_query", query_database)
+workflow.add_node("execute_query", execute_and_store_query)
+workflow.add_node("submit_final_answer", submit_answer_from_result)
 
 workflow.add_edge(START, "first_tool_call")
 workflow.add_edge("first_tool_call", "list_tables_tool")
@@ -104,10 +123,9 @@ workflow.add_edge("model_get_schema", "get_schema_tool")
 workflow.add_edge("get_schema_tool", "query_gen")
 workflow.add_conditional_edges(
     "query_gen",
-    should_continue,
-    {END: END, "query_gen": "query_gen", "correct_query": "correct_query"}
+    lambda state: "execute_query",  # Always execute SQL, do not allow END or correct_query here!
+    {"execute_query": "execute_query"}
 )
-workflow.add_edge("correct_query", "execute_query")
-workflow.add_edge("execute_query", "query_gen")
+workflow.add_edge("execute_query", "submit_final_answer")
 
 app = workflow.compile()
