@@ -2,10 +2,10 @@ from workflow import app
 
 if __name__ == "__main__":
     query = {
-        "user_input": "Show me the customers email addresses", 
+        "user_input": " Which products have never been ordered? ", 
         "last_query_result": None,
         "last_sql": ""
     }
-    print("Initial state:", query)
     response = app.invoke(query)
-    print("Response:", response)
+    # Print only the final formatted answer message!
+    print(response["messages"][-1].content)

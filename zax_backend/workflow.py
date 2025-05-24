@@ -1,3 +1,4 @@
+from table_selector import extract_keywords, match_tables_and_columns
 from db_schema_utils import fetch_schema_text
 from typing import Annotated, Any, TypedDict
 from pydantic import BaseModel, Field
@@ -13,13 +14,11 @@ from config import llm
 
 # --- Utility to detect if DB result is an error (simple version) ---
 def is_db_error(result):
-    # You may want to tune this for your actual DB error formats
     return isinstance(result, str) and (result.startswith("Error:") or "error" in result.lower())
 
 # --- The main workflow node for executing SQL with retry/correction ---
 def execute_with_correction(state, max_retries=3):
     messages = state.get("messages", [])
-    # Use last_sql directly, do not regenerate
     sql_query = state.get("last_sql", "")
     last_sql = sql_query
     db_result = None
@@ -44,6 +43,7 @@ def execute_with_correction(state, max_retries=3):
             state["messages"] = messages + [
                 AIMessage(content=f"[DB_RESULT]\nQuery: {sql_query}\nResult: {db_result}")
             ]
+            # DO NOT update user_input here!
             return state
 
         last_error = db_result
@@ -66,11 +66,13 @@ def execute_with_correction(state, max_retries=3):
             print("[ERROR] LLM correction returned empty SQL. Stopping retry loop.")
             break
 
+    # Return with user_input preserved (but do not assign it here!)
     state["last_sql"] = last_sql
     state["last_query_result"] = last_error
     state["messages"] = messages + [
         AIMessage(content=f"Sorry, the system was unable to generate a working SQL query for your request after {attempt} attempts.\nLast error: {last_error}")
     ]
+    # DO NOT update user_input here!
     return state
 
 # --- State definition ---
@@ -78,6 +80,7 @@ class State(TypedDict):
     messages: Annotated[list[Any], add_messages]
     last_query_result: Any
     last_sql: str
+    user_input: str
 
 # --- Tool wrappers ---
 def handle_tool_error(state: State):
@@ -87,6 +90,7 @@ def handle_tool_error(state: State):
         content=f"Error: {repr(error)}\n please fix your mistakes.",
         tool_call_id=tc["id"]
     ) for tc in tool_calls]}
+    # DO NOT return user_input
 
 def create_node_from_tool_with_fallback(tools: list) -> RunnableWithFallbacks:
     return ToolNode(tools).with_fallbacks([RunnableLambda(handle_tool_error)], exception_key="error")
@@ -104,35 +108,54 @@ class SubmitFinalAnswer(BaseModel):
 llm_with_final_answer = llm.bind_tools([SubmitFinalAnswer])
 query_generator = query_gen_prompt | llm
 
-# --- Nodes ---
 def first_tool_call(state: State) -> dict:
-    return {"messages": [AIMessage(content="", tool_calls=[{
-        "name": "sql_db_list_tables",
-        "args": {},
-        "id": "tool_abcd123"
-    }])], "last_query_result": None, "last_sql": ""}
+    # Only this node returns user_input
+    return {
+        "messages": [AIMessage(content="", tool_calls=[{
+            "name": "sql_db_list_tables",
+            "args": {},
+            "id": "tool_abcd123"
+        }])],
+        "last_query_result": None,
+        "last_sql": "",
+        "user_input": state.get("user_input", "")
+    }
 
 def check_the_given_query(state: State):
     last_message = state["messages"][-1]
-    sql_to_check = last_message.content  # or adjust extraction if needed
+    sql_to_check = last_message.content
     check_prompt_value = query_check_prompt.invoke({"messages": [HumanMessage(content=sql_to_check)]})
     checked_query = check_prompt_value.to_messages()[-1]
-    return {"messages": [checked_query]}
+    return {
+        "messages": [checked_query]
+        # DO NOT return user_input
+    }
 
 # --- IMPORTANT: Only generate SQL, do NOT allow SubmitFinalAnswer here ---
 
 def generation_query(state: State):
-    question = state["messages"][-1].content if state["messages"] else state.get("user_input", "")
-    schema_text = fetch_schema_text()
+    print("[DEBUG][generation_query] incoming state:", state)
+    user_question = state.get("user_input", "")
+    print("[DEBUG][generation_query] user_question before extract:", user_question)
+    keywords = extract_keywords(user_question)
+    tables, columns = match_tables_and_columns(keywords)
+    if tables:
+        print("[DEBUG] About to fetch schema for tables:", tables)
+        schema_text = fetch_schema_text(only_tables=tables)
+    else:
+        schema_text = fetch_schema_text()
     prompt_input = {
         "schema": schema_text,
-        "user_input": question
+        "user_input": user_question
     }
-    # Correct: use the pipeline to get the LLM output
     print("Prompt for LLM:", query_gen_prompt.format(**prompt_input))
     message = query_generator.invoke(prompt_input)
     sql_text = message.content if hasattr(message, "content") else ""
-    return {"messages": [message], "last_sql": sql_text}
+    return {
+        "messages": [message],
+        "last_sql": sql_text
+        # DO NOT return user_input
+    }
 
 def execute_and_store_query(state: State):
     sql_query = state.get("last_sql", "")
@@ -148,11 +171,12 @@ def execute_and_store_query(state: State):
         ],
         "last_query_result": db_result,
         "last_sql": sql_query
+        # DO NOT return user_input
     }
 
 def submit_answer_from_result(state: State):
     db_result = state.get("last_query_result")
-    if not db_result or db_result.startswith("Error"):
+    if not db_result or (isinstance(db_result, str) and db_result.startswith("Error")):
         return {"messages": [AIMessage(content="No data found or an error occurred. Unable to answer the question from the database.")]}
     prompt = (
         "You are a database assistant. ONLY use the following data to answer the user's question. "
@@ -161,6 +185,7 @@ def submit_answer_from_result(state: State):
     )
     message = llm_with_final_answer.invoke([HumanMessage(content=prompt)])
     return {"messages": [message]}
+    # DO NOT return user_input
 
 def should_continue(state: State):
     last_message = state["messages"][-1]
@@ -173,6 +198,7 @@ def should_continue(state: State):
 def llm_get_schema(state: State):
     response = llm.bind_tools([get_schema_tool]).invoke(state["messages"])
     return {"messages": [response]}
+    # DO NOT return user_input
 
 # --- WORKFLOW ---
 workflow = StateGraph(State)
@@ -182,7 +208,6 @@ workflow.add_node("get_schema_tool", get_schema)
 workflow.add_node("model_get_schema", llm_get_schema)
 workflow.add_node("query_gen", generation_query)
 workflow.add_node("correct_query", check_the_given_query)
-#workflow.add_node("execute_query", execute_and_store_query)
 workflow.add_node("execute_query", execute_with_correction)
 workflow.add_node("submit_final_answer", submit_answer_from_result)
 
