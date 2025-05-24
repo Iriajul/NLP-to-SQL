@@ -1,3 +1,4 @@
+from db_schema_utils import fetch_schema_text
 from typing import Annotated, Any, TypedDict
 from pydantic import BaseModel, Field
 from langgraph.graph import END, StateGraph, START
@@ -119,13 +120,17 @@ def check_the_given_query(state: State):
     return {"messages": [checked_query]}
 
 # --- IMPORTANT: Only generate SQL, do NOT allow SubmitFinalAnswer here ---
+
 def generation_query(state: State):
-    # Generate SQL only, not answer!
-    print("Prompt for LLM:", ...)
-    message = query_generator.invoke(state)  # message is an AIMessage
-    print("LLM SQL Generation Output:", message)
+    question = state["messages"][-1].content if state["messages"] else state.get("user_input", "")
+    schema_text = fetch_schema_text()
+    prompt_input = {
+        "schema": schema_text,
+        "user_input": question
+    }
+    # Correct: use the pipeline to get the LLM output
+    message = query_generator.invoke(prompt_input)
     sql_text = message.content if hasattr(message, "content") else ""
-    # Pass SQL to next step
     return {"messages": [message], "last_sql": sql_text}
 
 def execute_and_store_query(state: State):

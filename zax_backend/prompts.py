@@ -1,6 +1,6 @@
 from langchain_core.prompts import ChatPromptTemplate
 
-query_check_system = """You are a PostgreSQL expert. Carefully review the SQL query for common mistakes, including:
+query_check_system = """You are a PostgreSQL expert. Carefully review the PostgreSQL query for common mistakes, including:
 
 - Issues with NULL handling (e.g., NOT IN with NULLs)
 - Improper use of UNION instead of UNION ALL
@@ -17,8 +17,12 @@ query_check_prompt = ChatPromptTemplate.from_messages([
     ("placeholder", "{messages}")
 ])
 
+# UPDATED: Now accepts the schema dynamically for each prompt!
 query_gen_system_prompt = """
 You are a PostgreSQL expert. Your ONLY job is to generate a single, complete, and syntactically correct PostgreSQL query that answers the input question.
+
+DATABASE SCHEMA:
+{schema}
 
 STRICT INSTRUCTIONS:
 - Output ONLY the SQL query. DO NOT include explanations, tool calls, function calls (such as SubmitFinalAnswer), code blocks, or any answer or commentary.
@@ -36,11 +40,11 @@ ADDITIONAL SQL GENERATION GUIDELINES:
 
 """
 
+# UPDATED: Accepts {schema} and {user_input} as dynamic variables!
 query_gen_prompt = ChatPromptTemplate.from_messages([
     ("system", query_gen_system_prompt),
-    ("placeholder", "{messages}")
+    ("human", "{user_input}")
 ])
-
 
 sql_correction_system_prompt = """
 You are a PostgreSQL expert specializing in debugging SQL queries.
