@@ -129,6 +129,7 @@ def generation_query(state: State):
         "user_input": question
     }
     # Correct: use the pipeline to get the LLM output
+    print("Prompt for LLM:", query_gen_prompt.format(**prompt_input))
     message = query_generator.invoke(prompt_input)
     sql_text = message.content if hasattr(message, "content") else ""
     return {"messages": [message], "last_sql": sql_text}
