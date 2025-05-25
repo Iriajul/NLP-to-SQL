@@ -2,11 +2,12 @@ from table_selector import extract_keywords, match_tables_and_columns
 
 def test_selector():
     questions = [
-        "Show all customer emails",
-        "List the supplier ratings",
-        "Get sales representative phone numbers",
-        "Show me the orders with discounts",
-        "Products and their categories"
+        " List sales representatives and the number of orders they handled in their first year",
+        " Which product category has the highest return on stock investment?",
+        "Identify the products that show a consistent month-over-month revenue growth in the last 4 months",
+        "Categorize each supplier as Top, Average, or Low performer based on total revenue from their products.",
+        "Identify all orders that include both Electronics and Furniture products",
+        "Show the average rating of suppliers by country"
     ]
     for q in questions:
         keywords = extract_keywords(q)
