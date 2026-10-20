@@ -1,5 +1,8 @@
+import logging
 import re
 from collections import deque
+
+log = logging.getLogger(__name__)
 
 SCHEMA_TABLES = [
     "customers",
@@ -69,11 +72,11 @@ TABLE_ALIASES = {
 }
 
 def extract_keywords(question):
-    print("[DEBUG][extract_keywords] input question:", question)
+    log.debug("[DEBUG][extract_keywords] input question: %s", question)
     words = re.findall(r'\w+', question.lower())
-    print("[DEBUG][extract_keywords] words after split:", words)
+    log.debug("[DEBUG][extract_keywords] words after split: %s", words)
     filtered = [w for w in words if w not in STOPWORDS]
-    print("[DEBUG][extract_keywords] after stopword removal:", filtered)
+    log.debug("[DEBUG][extract_keywords] after stopword removal: %s", filtered)
     return filtered
 
 def singular(word):
@@ -105,7 +108,7 @@ def match_tables_and_columns(keywords):
                             matched_columns.add(col)
         # Alias/nickname match
         for alias, alias_table in TABLE_ALIASES.items():
-            if alias in " ".join(keywords) and alias_table == table:
+            if re.search(rf"\b{re.escape(alias)}\b", " ".join(keywords)) and alias_table == table:
                 matched_tables.add(table)
 
     # === 2. Multi-entity keyword table matching (boost for multiple mentioned entities) ===
@@ -113,7 +116,8 @@ def match_tables_and_columns(keywords):
     for k in keywords + list(keyword_singulars):
         # Check direct, singular, and alias mapping
         for table in SCHEMA_TABLES:
-            if k == table or k == singular(table) or k == table.rstrip('s'):
+            # startswith also catches word forms like "ordered" / "ordering" -> orders
+            if k == table or k == singular(table) or k == table.rstrip('s') or k.startswith(singular(table)):
                 keyword_all_tables.add(table)
         # Alias mapping
         if k in TABLE_ALIASES:
@@ -130,9 +134,9 @@ def match_tables_and_columns(keywords):
                     matched_columns.add(col)
                     matched_tables.add(table)
 
-    print("[DEBUG][selector] keywords:", keywords)
-    print("[DEBUG][selector] keyword_singulars:", keyword_singulars)
-    print("[DEBUG][selector] matched_tables after main pass:", matched_tables)
+    log.debug("[DEBUG][selector] keywords: %s", keywords)
+    log.debug("[DEBUG][selector] keyword_singulars: %s", keyword_singulars)
+    log.debug("[DEBUG][selector] matched_tables after main pass: %s", matched_tables)
 
     # === 4. Heuristic expansion for analytical/transactional language ===
     matched_tables = expand_tables_by_heuristics(matched_tables, keywords)
@@ -212,7 +216,7 @@ def expand_tables_by_dependency_graph(matched_tables):
             path = find_join_path(tables[i], tables[j])
             if path:
                 all_tables_needed.update(path)
-    print("[DEBUG][dependency-graph] tables after join-path expansion:", all_tables_needed)
+    log.debug("[DEBUG][dependency-graph] tables after join-path expansion: %s", all_tables_needed)
     return all_tables_needed
 
 def find_join_path(table1, table2):
