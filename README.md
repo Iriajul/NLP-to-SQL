@@ -3,120 +3,113 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A conversational AI agent that interacts with PostgreSQL databases using natural language, powered by LangChain and Groq's Llama3-70b model.
+Ask questions about a PostgreSQL database in plain English. A LangGraph pipeline picks the relevant tables, writes the SQL with an LLM on Groq, reviews it, runs it with a read-only user, fixes and retries it if the database returns an error, and explains the result.
+
+**Accuracy:** 14/15 on single questions (the one miss returned the correct month in a different format) and 7/7 on follow-up conversations (`evaluation/`).
 
 ## Features
 
-- Natural language to SQL conversion
-- Automatic SQL query validation and error correction
-- Database schema exploration
-- Safe query execution with result interpretation
-- Stateful conversation management
-- Groq API integration for high-speed inference
+- Saved chats like Claude/ChatGPT: a sidebar of past conversations you can reopen and continue (stored in PostgreSQL)
+- Follow-up questions: "now only for Germany" or "what about the 3 cheapest?" are rewritten into standalone questions using the conversation so far
+- Natural language to SQL with few-shot examples (joins, window functions, nested subqueries)
+- Schema linking: a keyword + foreign-key graph selector sends only the relevant tables to the model
+- SQL review step, then automatic error correction (up to 3 retries using the real database error)
+- Safe by design: read-only database user, 10 s query timeout, single-SELECT guard; chats use a separate user that can't see the sales data
+- Automatic charts: time results become a line chart, categories a bar chart (picked from the result shape, no extra LLM call; hover tooltips, light/dark)
+- Next.js chat UI with live pipeline progress, highlighted SQL, earlier failed attempts and a result table
+- FastAPI backend that streams each pipeline step to the browser (server-sent events)
 
-## Basic
+## How it works
 
-- Python 3.9+
-- PostgreSQL database
-- Groq API key
-- PostgreSQL credentials
+```
+START -> rewrite_question -> generate_sql -> check_sql -> execute_sql --ok--> answer -> END
+                                                              ^    |
+                                                              |  error (retries left)
+                                                           fix_sql <-+
+```
 
-## Installation
+`rewrite_question` only calls the model when there is earlier conversation (the last 3 turns are used).
 
-Clone the repository:
+## Setup
+
+Requirements: Python 3.12, Node.js 20+, PostgreSQL 16, a free [Groq API key](https://console.groq.com/keys).
+
 ```bash
-git clone https://github.com/yourusername/your-repo-name.git
-cd your-repo-name
-```
+# 1. Python environment
+uv venv .venv && uv pip install -r requirements.txt   # or: python -m venv .venv && .venv/bin/pip install -r requirements.txt
 
-## Project Structure
-```
-   .
-   ├── README.md
-   ├── app.py              # Streamlit interface
-   ├── zax.ipynb           # Main Jupyter notebook
-   ├── requirements.txt    # Dependencies
-   ├── .env.example        # Environment template
-```
+# 2. Config: copy the template and paste your Groq key
+cp .env.example .env
 
-1. Create and activate virtual environment  
-2. Install dependencies  
-3. Create .env file  
-4. Database setup:  
-   - Create PostgreSQL database with 'your' schema  
-   - Populate tables (refer to schema.sql)  
+# 3. Database: creates nlp_to_sql + owner, read-only and chat users, writes the URLs into .env
+bash database/create_db.sh
+
+# 4. Sample data (6 tables, 5,000 orders over 18 months) + saved-chat tables
+.venv/bin/python database/seed.py
+
+# 5. Website dependencies
+cd web && npm install && cd ..
+```
 
 ## Usage
 
-- Jupyter Notebook (`zax.ipynb`)
-- Web Interface (`app.py`)
+```bash
+./start.sh                                                  # API on :8100 + website on http://localhost:3100
+.venv/bin/python -m zax_backend.main "Which 5 products have the lowest stock?"   # one question in the terminal
+.venv/bin/pytest -q                                         # tests (no API key needed)
+.venv/bin/python -m evaluation.evaluate                     # accuracy test (uses Groq)
+.venv/bin/python -m evaluation.evaluate followups           # follow-up conversation test
+```
 
-## Key Components
-- Database Tools
-- SQLDatabaseToolkit: Schema exploration and query execution
-- Custom query validation and error handling
-- Safe query execution wrapper
+Change the model with `GROQ_MODEL` in `.env` (default `openai/gpt-oss-120b`). On Groq's free tier expect about 1–3 questions per minute because of the token-per-minute limit.
 
-### Database Tools
+## Project Structure
 
-- `SQLDatabaseToolkit`: Schema exploration and query execution  
-- Custom query validation and error handling  
-- Safe query execution wrapper  
+```
+.
+├── start.sh                  # starts API + website together
+├── web/                      # Next.js frontend (app/page.tsx, components/, lib/api.ts)
+├── api/server.py             # FastAPI: /api/ask (streaming), /api/chats, /api/schema, /api/health
+├── api/chats.py              # saved conversations (app schema)
+├── zax_backend/
+│   ├── workflow.py           # LangGraph pipeline
+│   ├── prompts.py            # generation, review, correction and answer prompts
+│   ├── table_selector.py     # picks relevant tables (keywords + join-path search)
+│   ├── db_schema_utils.py    # reads table/column/foreign-key info from PostgreSQL
+│   ├── tools.py              # SQL cleanup, read-only guard, query runner
+│   ├── config.py             # .env loading, database engine, LLM
+│   └── main.py               # command-line entry point
+├── database/
+│   ├── schema.sql            # info schema (6 tables)
+│   ├── app_schema.sql        # app schema: saved chats and messages
+│   ├── create_db.sh          # database + users
+│   └── seed.py               # realistic sample data
+├── evaluation/               # 15 questions with correct SQL + scoring script
+├── tests/                    # offline tests incl. API (fake LLM, real database)
+└── archive/                  # first versions: notebook and single-file backend
+```
 
-### Language Model
+### Database
 
-- ChatGroq with Llama3-70b-8192 model  
-- Temperature: 0.0 for deterministic output  
+`customers`, `orders`, `order_details`, `products`, `suppliers`, `sales_representative` in the `info` schema. Order totals always equal the sum of their line items, and a few products grow in popularity over time so trend questions have answers.
 
-### Workflow
-
-- Schema inspection  
-- Query generation  
-- SQL validation  
-- Safe execution  
-- Result interpretation  
-
-### Proccesed Graph
+### First version graph (notebook)
 
 ![Description](codeimage/Archgraph.png)
-
-
-## API Reference
-
-### Tools
-```json
-{
-    "sql_db_list_tables": "List available tables",
-    "sql_db_schema": "Get table schema",
-    "sql_db_query": "Execute SQL query",
-    "sql_db_query_checker": "Validate SQL queries"
-}
-```
-
-### State Graph
-```python
-StateGraph(State)
-    .add_node("first_tool_call", first_tool_call)
-    .add_node("list_tables_tool", list_tables)
-    .add_node("get_schema_tool", get_schema)
-    ...
-    .compile()
-```
 
 ## Example Queries
 ![Like](codeimage/code.png)
 
-## Interface (Simple)
+## Interface (first version, Streamlit)
 
 ![Streamlit](codeimage/Capture.png)
 
 
-
 ## Acknowledgments
 
-- LangChain for agent orchestration  
-- Groq for ultra-fast LLM inference  
-- PostgreSQL for reliable database management  
+- LangChain / LangGraph for agent orchestration
+- Groq for ultra-fast LLM inference
+- PostgreSQL for reliable database management
 
 
 ## YOU CAN FACE ULTRARAGE

@@ -10,11 +10,16 @@ query_check_system = """You are a PostgreSQL expert. Carefully review the Postgr
 - Incorrect number of arguments in functions
 - Errors in JOIN conditions
 
-If you find any mistakes, rewrite the query to fix them. If it's correct, reproduce it as is."""
+If you find any mistakes, rewrite the query to fix them. If it's correct, reproduce it as is.
+
+DATABASE SCHEMA:
+{schema}
+
+Output ONLY the final SQL query. No explanations, no code blocks."""
 
 query_check_prompt = ChatPromptTemplate.from_messages([
     ("system", query_check_system),
-    ("placeholder", "{messages}")
+    ("human", "Question: {user_input}\n\nSQL to review:\n{sql}")
 ])
 
 # UPDATED: With advanced window function and nested subquery examples!
@@ -143,6 +148,10 @@ query_gen_prompt = ChatPromptTemplate.from_messages([
 
 sql_correction_system_prompt = """
 You are a PostgreSQL expert specializing in debugging SQL queries.
+
+DATABASE SCHEMA:
+{schema}
+
 Your previous query failed with the following error:
 
 Error:
@@ -157,5 +166,37 @@ DO NOT output explanations, error messages, tool calls, or code blocks. ONLY out
 
 sql_correction_prompt = ChatPromptTemplate.from_messages([
     ("system", sql_correction_system_prompt),
-    ("placeholder", "{messages}")
+    ("human", "{user_input}")
+])
+
+answer_system_prompt = """You are a database assistant. Answer the user's question using ONLY the query result below.
+If the result is empty or does not answer the question, say you don't have enough information.
+Be concise. Use a short markdown table or list when there are several rows.
+
+SQL that was run:
+{sql}
+
+Query result (columns, then rows):
+{result}"""
+
+answer_prompt = ChatPromptTemplate.from_messages([
+    ("system", answer_system_prompt),
+    ("human", "{user_input}")
+])
+rewrite_system_prompt = """You turn a follow-up question into a complete, standalone question about the database.
+
+Below is the earlier conversation: each user question, the SQL that answered it, and the answer.
+Rewrite the NEW question so it can be understood with no conversation history:
+- Resolve references like "that", "them", "those", "same", "instead", "now only ...", "by month" using the conversation.
+- Keep every condition from the earlier question that the user did not change (filters, limits, grouping, metric).
+- If the new question is already standalone or about a new topic, return it unchanged.
+
+Output ONLY the rewritten question, as one sentence. No explanations, no SQL, no quotes.
+
+CONVERSATION:
+{history}"""
+
+rewrite_prompt = ChatPromptTemplate.from_messages([
+    ("system", rewrite_system_prompt),
+    ("human", "NEW question: {user_input}")
 ])

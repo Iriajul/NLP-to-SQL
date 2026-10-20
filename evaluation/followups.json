@@ -1,0 +1,23 @@
+[
+  {"previous": "Who are the top 3 customers by total amount spent?",
+   "question": "now only customers from Germany",
+   "sql": "SELECT c.customer_id, SUM(o.total_amount) FROM info.customers c JOIN info.orders o USING (customer_id) WHERE c.country = 'Germany' GROUP BY c.customer_id ORDER BY 2 DESC LIMIT 3"},
+  {"previous": "How many orders were placed in September 2026?",
+   "question": "and in August?",
+   "sql": "SELECT count(*) FROM info.orders WHERE order_date >= '2026-08-01' AND order_date < '2026-09-01'"},
+  {"previous": "Which product category has the most products?",
+   "question": "which one has the fewest?",
+   "sql": "SELECT category FROM info.products GROUP BY category ORDER BY count(*) LIMIT 1"},
+  {"previous": "List the product ids of the 3 most expensive products.",
+   "question": "what about the 3 cheapest?",
+   "sql": "SELECT product_id FROM info.products ORDER BY price LIMIT 3"},
+  {"previous": "How many active sales representatives are in the Europe region?",
+   "question": "what about North America?",
+   "sql": "SELECT count(*) FROM info.sales_representative WHERE status = 'Active' AND region = 'North America'"},
+  {"previous": "What is the most common payment method?",
+   "question": "show the number of orders for each of them",
+   "sql": "SELECT payment_method, count(*) FROM info.orders GROUP BY payment_method"},
+  {"previous": "What is the total amount of all delivered orders?",
+   "question": "how many orders is that?",
+   "sql": "SELECT count(*) FROM info.orders WHERE status = 'Delivered'"}
+]

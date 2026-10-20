@@ -1,228 +1,141 @@
-from table_selector import extract_keywords, match_tables_and_columns
-from db_schema_utils import fetch_schema_text
-from typing import Annotated, Any, TypedDict
-from pydantic import BaseModel, Field
-from langgraph.graph import END, StateGraph, START
-from langgraph.graph.message import add_messages
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_core.runnables import RunnableLambda, RunnableWithFallbacks
-from langgraph.prebuilt import ToolNode
-from tools import list_tables_tool, get_schema_tool, query_to_database
-from prompts import query_check_prompt, query_gen_prompt, sql_correction_prompt
-from langchain.schema import AIMessage, HumanMessage
-from config import llm
+"""LangGraph pipeline: question -> SQL -> check -> run (fix and retry on error) -> answer.
 
-# --- Utility to detect if DB result is an error (simple version) ---
-def is_db_error(result):
-    return isinstance(result, str) and (result.startswith("Error:") or "error" in result.lower())
+    START -> rewrite_question -> generate_sql -> check_sql -> execute_sql --ok--> answer -> END
+                                                                 ^    |
+                                                                 |  error (retries left)
+                                                              fix_sql <-+
 
-# --- The main workflow node for executing SQL with retry/correction ---
-def execute_with_correction(state, max_retries=3):
-    messages = state.get("messages", [])
-    sql_query = state.get("last_sql", "")
-    last_sql = sql_query
-    db_result = None
-    last_error = None
-    attempt = 0
+rewrite_question turns a follow-up ("now only for Germany") into a standalone question
+using the earlier turns in `history`. Without history it just passes the question through.
+"""
+import logging
+from typing import TypedDict
 
-    print(f"[INITIAL SQL GENERATED]: {sql_query}")
+import groq
+from langgraph.graph import END, START, StateGraph
 
-    while attempt < max_retries:
-        if not sql_query:
-            print(f"[SQL_QUERY][Attempt {attempt+1} failed]: LLM returned empty SQL!")
-            db_result = "Error: LLM returned empty SQL"
-            last_error = db_result
-            break
+from .config import get_llm
+from .db_schema_utils import fetch_schema_text
+from .prompts import answer_prompt, query_check_prompt, query_gen_prompt, rewrite_prompt, sql_correction_prompt
+from .table_selector import extract_keywords, match_tables_and_columns
+from .tools import clean_sql, run_query
 
-        db_result = query_to_database.invoke(sql_query)
-        if not is_db_error(db_result):
-            print(f"[SQL_QUERY]: {sql_query}")
-            print(f"[DB_RESULT]: {db_result}")
-            state["last_sql"] = sql_query
-            state["last_query_result"] = db_result
-            state["messages"] = messages + [
-                AIMessage(content=f"[DB_RESULT]\nQuery: {sql_query}\nResult: {db_result}")
-            ]
-            # DO NOT update user_input here!
-            return state
+log = logging.getLogger(__name__)
 
-        last_error = db_result
-        attempt += 1
-        print(f"[SQL_QUERY][Attempt {attempt} failed]: {sql_query}")
-        print(f"[DB_ERROR]: {db_result}")
+MAX_FIXES = 3
+MAX_ROWS_FOR_ANSWER = 50
+MAX_HISTORY_TURNS = 3
+MAX_ANSWER_CHARS_IN_HISTORY = 600
 
-        # Correction round: ask LLM to fix SQL given the error
-        correction_prompt_value = sql_correction_prompt.invoke({
-            "sql": sql_query,
-            "db_error": db_result,
-            "messages": [HumanMessage(content=state.get("user_input", ""))]
-        })
-        correction_message = correction_prompt_value.to_messages()[-1]
-        sql_query = correction_message.content.strip()
-        last_sql = sql_query
-        print(f"[LLM CORRECTION OUTPUT][Attempt {attempt}]: {sql_query}")
 
-        if not sql_query:
-            print("[ERROR] LLM correction returned empty SQL. Stopping retry loop.")
-            break
+class Turn(TypedDict):
+    question: str
+    sql: str
+    answer: str
 
-    # Return with user_input preserved (but do not assign it here!)
-    state["last_sql"] = last_sql
-    state["last_query_result"] = last_error
-    state["messages"] = messages + [
-        AIMessage(content=f"Sorry, the system was unable to generate a working SQL query for your request after {attempt} attempts.\nLast error: {last_error}")
-    ]
-    # DO NOT update user_input here!
-    return state
 
-# --- State definition ---
-class State(TypedDict):
-    messages: Annotated[list[Any], add_messages]
-    last_query_result: Any
-    last_sql: str
-    user_input: str
+class State(TypedDict, total=False):
+    user_input: str         # what the user typed
+    history: list[Turn]     # earlier turns of the conversation, oldest first
+    question: str           # standalone version of user_input; used by every later step
+    schema: str
+    tables: list[str]
+    sql: str
+    columns: list[str]
+    rows: list[tuple]
+    error: str | None
+    attempts: int          # how many times the SQL was run
+    sql_history: list[str]  # every SQL tried, for the UI
+    answer: str
 
-# --- Tool wrappers ---
-def handle_tool_error(state: State):
-    error = state.get("error")
-    tool_calls = state["messages"][-1].tool_calls
-    return {"messages": [AIMessage(
-        content=f"Error: {repr(error)}\n please fix your mistakes.",
-        tool_call_id=tc["id"]
-    ) for tc in tool_calls]}
-    # DO NOT return user_input
 
-def create_node_from_tool_with_fallback(tools: list) -> RunnableWithFallbacks:
-    return ToolNode(tools).with_fallbacks([RunnableLambda(handle_tool_error)], exception_key="error")
+def _ask(prompt, values, tries=3) -> str:
+    for attempt in range(1, tries + 1):
+        try:
+            return get_llm().invoke(prompt.invoke(values)).content
+        except groq.BadRequestError as e:
+            # Groq sometimes fails to parse gpt-oss output ("output_parse_failed"); a retry usually works.
+            if "output_parse_failed" not in str(e) or attempt == tries:
+                raise
+            log.warning("Groq output_parse_failed, retrying (%d/%d)", attempt, tries - 1)
 
-list_tables = create_node_from_tool_with_fallback([list_tables_tool])
-get_schema = create_node_from_tool_with_fallback([get_schema_tool])
 
-llm_with_tools = llm.bind_tools([query_to_database])
-check_generated_query = query_check_prompt | llm_with_tools
+def format_history(history: list[Turn]) -> str:
+    parts = []
+    for i, t in enumerate(history[-MAX_HISTORY_TURNS:], 1):
+        answer = t["answer"][:MAX_ANSWER_CHARS_IN_HISTORY]
+        parts.append(f"[{i}] User: {t['question']}\nSQL: {t['sql']}\nAnswer: {answer}")
+    return "\n\n".join(parts)
 
-class SubmitFinalAnswer(BaseModel):
-    """Submit the final answer to the user based on the query results."""
-    final_answer: str = Field(..., description="The formatted query results")
 
-llm_with_final_answer = llm.bind_tools([SubmitFinalAnswer])
-query_generator = query_gen_prompt | llm
+def rewrite_question(state: State):
+    history = state.get("history") or []
+    if not history:
+        return {"question": state["user_input"]}
+    question = _ask(rewrite_prompt, {"history": format_history(history), "user_input": state["user_input"]})
+    question = question.strip().strip('"').strip()
+    log.info("rewrote follow-up: %r -> %r", state["user_input"], question)
+    return {"question": question or state["user_input"]}
 
-def first_tool_call(state: State) -> dict:
-    # Only this node returns user_input
-    return {
-        "messages": [AIMessage(content="", tool_calls=[{
-            "name": "sql_db_list_tables",
-            "args": {},
-            "id": "tool_abcd123"
-        }])],
-        "last_query_result": None,
-        "last_sql": "",
-        "user_input": state.get("user_input", "")
-    }
 
-def check_the_given_query(state: State):
-    last_message = state["messages"][-1]
-    sql_to_check = last_message.content
-    check_prompt_value = query_check_prompt.invoke({"messages": [HumanMessage(content=sql_to_check)]})
-    checked_query = check_prompt_value.to_messages()[-1]
-    return {
-        "messages": [checked_query]
-        # DO NOT return user_input
-    }
+def generate_sql(state: State):
+    question = state["question"]
+    tables, _ = match_tables_and_columns(extract_keywords(question))
+    schema = fetch_schema_text(only_tables=tables or None)
+    log.info("selected tables: %s", tables)
+    sql = clean_sql(_ask(query_gen_prompt, {"schema": schema, "user_input": question}))
+    return {"schema": schema, "tables": tables, "sql": sql, "attempts": 0, "sql_history": []}
 
-# --- IMPORTANT: Only generate SQL, do NOT allow SubmitFinalAnswer here ---
 
-def generation_query(state: State):
-    print("[DEBUG][generation_query] incoming state:", state)
-    user_question = state.get("user_input", "")
-    print("[DEBUG][generation_query] user_question before extract:", user_question)
-    keywords = extract_keywords(user_question)
-    tables, columns = match_tables_and_columns(keywords)
-    if tables:
-        print("[DEBUG] About to fetch schema for tables:", tables)
-        schema_text = fetch_schema_text(only_tables=tables)
-    else:
-        schema_text = fetch_schema_text()
-    prompt_input = {
-        "schema": schema_text,
-        "user_input": user_question
-    }
-    print("Prompt for LLM:", query_gen_prompt.format(**prompt_input))
-    message = query_generator.invoke(prompt_input)
-    sql_text = message.content if hasattr(message, "content") else ""
-    return {
-        "messages": [message],
-        "last_sql": sql_text
-        # DO NOT return user_input
-    }
+def check_sql(state: State):
+    sql = clean_sql(_ask(query_check_prompt, {
+        "schema": state["schema"], "user_input": state["question"], "sql": state["sql"]}))
+    return {"sql": sql or state["sql"]}  # keep the original if the checker returns nothing
 
-def execute_and_store_query(state: State):
-    sql_query = state.get("last_sql", "")
-    if not sql_query:
-        db_result = "Error: No SQL query found."
-    else:
-        db_result = query_to_database.invoke(sql_query)
-    print(f"[SQL_QUERY]: {sql_query}")
-    print(f"[DB_RESULT]: {db_result}")
-    return {
-        "messages": state["messages"] + [
-            AIMessage(content=f"[DB_RESULT]\nQuery: {sql_query}\nResult: {db_result}")
-        ],
-        "last_query_result": db_result,
-        "last_sql": sql_query
-        # DO NOT return user_input
-    }
 
-def submit_answer_from_result(state: State):
-    db_result = state.get("last_query_result")
-    if not db_result or (isinstance(db_result, str) and db_result.startswith("Error")):
-        return {"messages": [AIMessage(content="No data found or an error occurred. Unable to answer the question from the database.")]}
-    prompt = (
-        "You are a database assistant. ONLY use the following data to answer the user's question. "
-        "If you cannot answer from the data, say you do not have enough information. "
-        f"Database result: {db_result}\nFormat it for the user."
-    )
-    message = llm_with_final_answer.invoke([HumanMessage(content=prompt)])
-    return {"messages": [message]}
-    # DO NOT return user_input
+def execute_sql(state: State):
+    columns, rows, error = run_query(state["sql"])
+    log.info("attempt %d: %s -> %s", state["attempts"] + 1, state["sql"], error or f"{len(rows)} rows")
+    return {"columns": columns, "rows": rows, "error": error,
+            "attempts": state["attempts"] + 1, "sql_history": state["sql_history"] + [state["sql"]]}
 
-def should_continue(state: State):
-    last_message = state["messages"][-1]
-    if getattr(last_message, "tool_calls", None):
-        return END
-    elif last_message.content.startswith("Error:") or "No data found" in last_message.content:
-        return END
-    return "correct_query"
 
-def llm_get_schema(state: State):
-    response = llm.bind_tools([get_schema_tool]).invoke(state["messages"])
-    return {"messages": [response]}
-    # DO NOT return user_input
+def fix_sql(state: State):
+    sql = clean_sql(_ask(sql_correction_prompt, {
+        "schema": state["schema"], "sql": state["sql"],
+        "db_error": state["error"], "user_input": state["question"]}))
+    return {"sql": sql}
 
-# --- WORKFLOW ---
+
+def answer(state: State):
+    if state.get("error"):
+        return {"answer": f"Sorry, I couldn't build a working query after {state['attempts']} attempts.\n\n"
+                          f"Last error: {state['error']}"}
+    result = [state["columns"]] + list(state["rows"][:MAX_ROWS_FOR_ANSWER])
+    text = _ask(answer_prompt, {"sql": state["sql"], "result": result, "user_input": state["question"]})
+    return {"answer": text}
+
+
+def after_execute(state: State):
+    if state.get("error") and state["attempts"] <= MAX_FIXES:
+        return "fix_sql"
+    return "answer"
+
+
 workflow = StateGraph(State)
-workflow.add_node("first_tool_call", first_tool_call)
-workflow.add_node("list_tables_tool", list_tables)
-workflow.add_node("get_schema_tool", get_schema)
-workflow.add_node("model_get_schema", llm_get_schema)
-workflow.add_node("query_gen", generation_query)
-workflow.add_node("correct_query", check_the_given_query)
-workflow.add_node("execute_query", execute_with_correction)
-workflow.add_node("submit_final_answer", submit_answer_from_result)
+workflow.add_node("rewrite_question", rewrite_question)
+workflow.add_node("generate_sql", generate_sql)
+workflow.add_node("check_sql", check_sql)
+workflow.add_node("execute_sql", execute_sql)
+workflow.add_node("fix_sql", fix_sql)
+workflow.add_node("answer", answer)
 
-workflow.add_edge(START, "first_tool_call")
-workflow.add_edge("first_tool_call", "list_tables_tool")
-workflow.add_edge("list_tables_tool", "model_get_schema")
-workflow.add_edge("model_get_schema", "get_schema_tool")
-workflow.add_edge("get_schema_tool", "query_gen")
-workflow.add_edge("query_gen", "correct_query")
-workflow.add_edge("correct_query", "execute_query")
-workflow.add_conditional_edges(
-    "query_gen",
-    lambda state: "execute_query",  # Always execute SQL, do not allow END or correct_query here!
-    {"execute_query": "execute_query"}
-)
-workflow.add_edge("execute_query", "submit_final_answer")
+workflow.add_edge(START, "rewrite_question")
+workflow.add_edge("rewrite_question", "generate_sql")
+workflow.add_edge("generate_sql", "check_sql")
+workflow.add_edge("check_sql", "execute_sql")
+workflow.add_conditional_edges("execute_sql", after_execute, ["fix_sql", "answer"])
+workflow.add_edge("fix_sql", "execute_sql")
+workflow.add_edge("answer", END)
 
 app = workflow.compile()
